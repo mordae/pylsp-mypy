@@ -8,6 +8,7 @@ Created on Fri Jul 10 09:53:57 2020
 import ast
 import atexit
 import collections
+import json
 import logging
 import os
 import os.path
@@ -535,16 +536,20 @@ def findConfigFile(
 
 @atexit.register
 def close() -> None:
-    """
-    Deletes the tempFile should it exist.
+    """Deletes the tempFile should it exist."""
 
-    Returns
-    -------
-    None.
-
-    """
     if tmpFile and tmpFile.name:
         os.unlink(tmpFile.name)
 
     if os.path.exists(statusFile):
+        with open(statusFile, "rb") as fp:
+            data = json.load(fp)
+            sock = data.get("connection_name")
+
+            try:
+                os.unlink(sock)
+                os.rmdir(os.path.dirname(sock))
+            except Exception:
+                pass
+
         os.unlink(statusFile)
