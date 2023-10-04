@@ -211,12 +211,6 @@ def get_diagnostics(
     live_mode = settings.get("live_mode", True)
     dmypy = settings.get("dmypy", False)
 
-    if dmypy and live_mode:
-        # dmypy can only be efficiently run on files that have been saved, see:
-        # https://github.com/python/mypy/issues/9309
-        log.warning("live_mode is not supported with dmypy, disabling")
-        live_mode = False
-
     if dmypy:
         dmypy_status_file = settings.get("dmypy_status_file", ".dmypy.json")
 
