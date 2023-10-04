@@ -23,7 +23,7 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type:ignore
 
 from mypy import api as mypy_api
-from pylsp import hookimpl
+from pylsp import _utils, hookimpl
 from pylsp.config.config import Config
 from pylsp.workspace import Document, Workspace
 
@@ -305,8 +305,13 @@ def pylsp_hover(
     settings = settingsCache.get(workspace.root_path, {})
     dmypy = settings.get("dmypy", False)
 
+    try:
+        word, base = get_base_hover(document, position)
+    except Exception:
+        word, base = "?", ""
+
     if not dmypy:
-        return {}
+        return format_hover(base, {})
 
     line = position.get("line", 0) + 1
     column = position.get("character", 0) + 1
@@ -328,33 +333,97 @@ def pylsp_hover(
 
     if status != 0:
         if stderr:
-            return {"contents": f"Exit code={status}:\n\n{stderr}"}
+            return format_hover(base, {"contents": f"Exit code={status}:\n\n{stderr}"})
 
-        return {}
+        return format_hover(base, {})
 
     if " -> " not in stdout:
-        return {"contents": stdout}
+        return format_hover(base, {"contents": stdout})
 
     pos, msg = stdout.split(" -> ", maxsplit=1)
     nums = pos.split(":")
     msg = msg.strip()
 
     if "None" in nums:
-        return {"contents": msg}
+        return format_hover(base, {"contents": msg})
 
     if msg.startswith('"'):
         msg = msg[1:-1]
 
-    if msg != "overloaded function":
-        msg = f"```python\n{msg}\n```\n"
+    if msg == "overloaded function":
+        msg = f"{word}: {msg}"
+    else:
+        msg = f"```python\n{word}: {msg}\n```\n"
 
-    return {
-        "contents": msg,
-        "range": {
-            "start": {"line": int(nums[0]) - 1, "character": int(nums[1]) - 1},
-            "end": {"line": int(nums[2]) - 1, "character": int(nums[3]) - 1},
+    return format_hover(
+        base,
+        {
+            "contents": msg,
+            "range": {
+                "start": {"line": int(nums[0]) - 1, "character": int(nums[1]) - 1},
+                "end": {"line": int(nums[2]) - 1, "character": int(nums[3]) - 1},
+            },
         },
-    }
+    )
+
+
+def format_hover(base: str, mypy: dict[str, Any]) -> dict[str, Any]:
+    """Format hover contents to have both Jedi docstring info and Mypy type info."""
+
+    if not base:
+        return mypy
+
+    if not mypy:
+        return {"contents": base}
+
+    copy = dict(mypy)
+    copy["contents"] = base + "\n---\n" + mypy["contents"]
+    return copy
+
+
+def get_base_hover(document: Document, position: dict[str, int]) -> tuple[str, str]:
+    code_position = _utils.position_to_jedi_linecolumn(document, position)
+    definitions = document.jedi_script(use_document_path=True).infer(**code_position)
+    word = document.word_at_position(position)
+
+    # Find first exact matching definition
+    definition = next((x for x in definitions if x.name == word), None)
+
+    # Ensure a definition is used if only one is available
+    # even if the word doesn't match. An example of this case is 'np'
+    # where 'numpy' doesn't match with 'np'. Same for NumPy ufuncs
+    if len(definitions) == 1:
+        definition = definitions[0]
+
+    if not definition:
+        return str(word), ""
+
+    # Find matching signatures
+    ds = definition.get_signatures()
+    ds.sort(key=lambda x: 10 if x.type == "module" else 0)
+
+    signatures = [x.to_string() for x in ds if x.name == word]
+
+    lines: list[str] = []
+
+    if signatures:
+        lines += [
+            "```python",
+            *signatures[:1],
+            "```",
+            "",
+        ]
+
+    docstring = definition.docstring(raw=True).strip()
+    if docstring:
+        lines += [
+            "```sphinx",
+            docstring,
+            "```",
+            "",
+        ]
+
+    return str(word), str("\n".join(lines))
 
 
 def init(workspace: str) -> Dict[str, str]:
