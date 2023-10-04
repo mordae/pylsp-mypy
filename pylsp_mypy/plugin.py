@@ -334,6 +334,69 @@ def pylsp_settings(config: Config) -> Dict[str, Dict[str, Dict[str, str]]]:
     return {"plugins": {"pylsp_mypy": configuration}}
 
 
+@hookimpl
+def pylsp_hover(
+    config: Config,
+    workspace: Workspace,
+    document: Document,
+    position: dict[str, int],
+) -> dict[str, Any]:
+    settings = settingsCache.get(workspace.root_path, {})
+    dmypy = settings.get("dmypy", False)
+    dmypy_status_file = settings.get("dmypy_status_file", ".dmypy.json")
+
+    if not dmypy:
+        return {}
+
+    line = position.get("line", 0) + 1
+    column = position.get("character", 0) + 1
+
+    stdout, stderr, status = mypy_api.run_dmypy(
+        [
+            "--status-file",
+            dmypy_status_file,
+            "inspect",
+            "--force-reload",
+            "--include-span",
+            "--include-object-attrs",
+            "--union-attrs",
+            "--limit=1",
+            "--show=type",
+            f"{document.path}:{line}:{column}",
+        ]
+    )
+
+    if status != 0:
+        if stderr:
+            return {"contents": f"Exit code={status}:\n\n{stderr}"}
+
+        return {}
+
+    if " -> " not in stdout:
+        return {"contents": stdout}
+
+    pos, msg = stdout.split(" -> ", maxsplit=1)
+    nums = pos.split(":")
+    msg = msg.strip()
+
+    if "None" in nums:
+        return {"contents": msg}
+
+    if msg.startswith('"'):
+        msg = msg[1:-1]
+
+    if msg != "overloaded function":
+        msg = f"```python\n{msg}\n```\n"
+
+    return {
+        "contents": msg,
+        "range": {
+            "start": {"line": int(nums[0]) - 1, "character": int(nums[1]) - 1},
+            "end": {"line": int(nums[2]) - 1, "character": int(nums[3]) - 1},
+        },
+    }
+
+
 def init(workspace: str) -> Dict[str, str]:
     """
     Find plugin and mypy config files and creates the temp file should it be used.
