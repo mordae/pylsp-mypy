@@ -536,7 +536,7 @@ def findConfigFile(
 
 @atexit.register
 def close() -> None:
-    """Deletes the tempFile should it exist."""
+    mypy_api.run_dmypy(["stop"])
 
     if tmpFile and tmpFile.name:
         os.unlink(tmpFile.name)
