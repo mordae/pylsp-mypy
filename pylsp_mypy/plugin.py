@@ -43,13 +43,6 @@ settingsCache: Dict[str, Dict[str, Any]] = {}
 
 tmpFile: Optional[IO[str]] = None
 
-# In non-live-mode the file contents aren't updated.
-# Returning an empty diagnostic clears the diagnostic result,
-# so store a cache of last diagnostics for each file a-la the pylint plugin,
-# so we can return some potentially-stale diagnostics.
-# https://github.com/python-lsp/python-lsp-server/blob/v1.0.1/pylsp/plugins/pylint_lint.py#L55-L62
-last_diagnostics: Dict[str, List[Dict[str, Any]]] = collections.defaultdict(list)
-
 
 def parse_line(line: str, document: Optional[Document] = None) -> Optional[Dict[str, Any]]:
     """
@@ -208,7 +201,6 @@ def get_diagnostics(
         is_saved,
     )
 
-    live_mode = settings.get("live_mode", True)
     dmypy = settings.get("dmypy", False)
 
     if dmypy:
@@ -217,7 +209,7 @@ def get_diagnostics(
     args = ["--show-error-end", "--no-error-summary"]
 
     global tmpFile
-    if live_mode and not is_saved:
+    if not is_saved:
         if tmpFile:
             tmpFile = open(tmpFile.name, "w", encoding="utf-8")
         else:
@@ -226,14 +218,6 @@ def get_diagnostics(
         tmpFile.write(document.source)
         tmpFile.close()
         args.extend(["--shadow-file", document.path, tmpFile.name])
-    elif not is_saved and document.path in last_diagnostics:
-        # On-launch the document isn't marked as saved, so fall through and run
-        # the diagnostics anyway even if the file contents may be out of date.
-        log.info(
-            "non-live, returning cached diagnostics len(cached) = %s",
-            last_diagnostics[document.path],
-        )
-        return last_diagnostics[document.path]
 
     mypyConfigFile = mypyConfigFileMap.get(workspace.root_path)
     if mypyConfigFile:
@@ -255,23 +239,7 @@ def get_diagnostics(
         log.info("executing mypy args = %s via api", args)
         report, errors, exit_status = mypy_api.run(args)
     else:
-        # If dmypy daemon is non-responsive calls to run will block.
-        # Check daemon status, if non-zero daemon is dead or hung.
-        # If daemon is hung, kill will reset
-        # If daemon is dead/absent, kill will no-op.
-        # In either case, reset to fresh state
-
-        _, errors, exit_status = mypy_api.run_dmypy(["status", "--status-file", dmypy_status_file])
-        if exit_status != 0:
-            log.info(
-                "restarting dmypy from status: %s message: %s via api",
-                exit_status,
-                errors.strip(),
-            )
-            mypy_api.run_dmypy(["restart", "--status-file", dmypy_status_file])
-
-        # run to use existing daemon or restart if required
-        args = ["run", "--"] + apply_overrides(args, overrides)
+        args = ["run", "--export-types", "--"] + apply_overrides(args, overrides)
 
         log.info("dmypy run args = %s via api", args)
         report, errors, exit_status = mypy_api.run_dmypy(args)
@@ -304,7 +272,6 @@ def get_diagnostics(
 
     log.info("pylsp-mypy len(diagnostics) = %s", len(diagnostics))
 
-    last_diagnostics[document.path] = diagnostics
     return diagnostics
 
 
@@ -350,7 +317,6 @@ def pylsp_hover(
             "--status-file",
             dmypy_status_file,
             "inspect",
-            "--force-reload",
             "--include-span",
             "--include-object-attrs",
             "--union-attrs",
