@@ -21,9 +21,10 @@ line_length = 100
 enabled = true
 live_mode = true
 strict = true
+dmypy = true
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.11"
 
 [[tool.mypy.overrides]]
 module = "pylsp.*"

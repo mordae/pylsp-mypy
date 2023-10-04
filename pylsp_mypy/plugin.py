@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 File that contains the python-lsp-server plugin pylsp-mypy.
 
@@ -13,8 +12,6 @@ import logging
 import os
 import os.path
 import re
-import shutil
-import subprocess
 import tempfile
 from configparser import ConfigParser
 from pathlib import Path
@@ -23,7 +20,7 @@ from typing import IO, Any, Dict, List, Optional
 try:
     import tomllib
 except ModuleNotFoundError:
-    import tomli as tomllib
+    import tomli as tomllib  # type:ignore
 
 from mypy import api as mypy_api
 from pylsp import hookimpl
@@ -52,14 +49,6 @@ tmpFile: Optional[IO[str]] = None
 # so we can return some potentially-stale diagnostics.
 # https://github.com/python-lsp/python-lsp-server/blob/v1.0.1/pylsp/plugins/pylint_lint.py#L55-L62
 last_diagnostics: Dict[str, List[Dict[str, Any]]] = collections.defaultdict(list)
-
-# Windows started opening opening a cmd-like window for every subprocess call
-# This flag prevents that.
-# This flag is new in python 3.7
-# This flag only exists on Windows
-windows_flag: Dict[str, int] = (
-    {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}  # type: ignore
-)
 
 
 def parse_line(line: str, document: Optional[Document] = None) -> Optional[Dict[str, Any]]:
@@ -181,7 +170,7 @@ def pylsp_lint(
 
     didSettingsChange(workspace.root_path, settings)
 
-    if settings.get("report_progress", False):
+    if settings.get("report_progress", True):
         with workspace.report_progress("lint: mypy"):
             return get_diagnostics(workspace, document, settings, is_saved)
     else:
@@ -269,21 +258,8 @@ def get_diagnostics(
         args.extend(["--incremental", "--follow-imports", "silent"])
         args = apply_overrides(args, overrides)
 
-        if shutil.which("mypy"):
-            # mypy exists on path
-            # -> use mypy on path
-            log.info("executing mypy args = %s on path", args)
-            completed_process = subprocess.run(
-                ["mypy", *args], capture_output=True, **windows_flag, encoding="utf-8"
-            )
-            report = completed_process.stdout
-            errors = completed_process.stderr
-            exit_status = completed_process.returncode
-        else:
-            # mypy does not exist on path, but must exist in the env pylsp-mypy is installed in
-            # -> use mypy via api
-            log.info("executing mypy args = %s via api", args)
-            report, errors, exit_status = mypy_api.run(args)
+        log.info("executing mypy args = %s via api", args)
+        report, errors, exit_status = mypy_api.run(args)
     else:
         # If dmypy daemon is non-responsive calls to run will block.
         # Check daemon status, if non-zero daemon is dead or hung.
@@ -291,60 +267,20 @@ def get_diagnostics(
         # If daemon is dead/absent, kill will no-op.
         # In either case, reset to fresh state
 
-        if shutil.which("dmypy"):
-            # dmypy exists on path
-            # -> use dmypy on path
-            completed_process = subprocess.run(
-                ["dmypy", "--status-file", dmypy_status_file, "status"],
-                capture_output=True,
-                **windows_flag,
-                encoding="utf-8",
+        _, errors, exit_status = mypy_api.run_dmypy(["status", "--status-file", dmypy_status_file])
+        if exit_status != 0:
+            log.info(
+                "restarting dmypy from status: %s message: %s via api",
+                exit_status,
+                errors.strip(),
             )
-            errors = completed_process.stderr
-            exit_status = completed_process.returncode
-            if exit_status != 0:
-                log.info(
-                    "restarting dmypy from status: %s message: %s via path",
-                    exit_status,
-                    errors.strip(),
-                )
-                subprocess.run(
-                    ["dmypy", "--status-file", dmypy_status_file, "restart"],
-                    capture_output=True,
-                    **windows_flag,
-                    encoding="utf-8",
-                )
-        else:
-            # dmypy does not exist on path, but must exist in the env pylsp-mypy is installed in
-            # -> use dmypy via api
-            _, errors, exit_status = mypy_api.run_dmypy(
-                ["--status-file", dmypy_status_file, "status"]
-            )
-            if exit_status != 0:
-                log.info(
-                    "restarting dmypy from status: %s message: %s via api",
-                    exit_status,
-                    errors.strip(),
-                )
-                mypy_api.run_dmypy(["--status-file", dmypy_status_file, "restart"])
+            mypy_api.run_dmypy(["restart", "--status-file", dmypy_status_file])
 
         # run to use existing daemon or restart if required
-        args = ["--status-file", dmypy_status_file, "run", "--"] + apply_overrides(args, overrides)
-        if shutil.which("dmypy"):
-            # dmypy exists on path
-            # -> use mypy on path
-            log.info("dmypy run args = %s via path", args)
-            completed_process = subprocess.run(
-                ["dmypy", *args], capture_output=True, **windows_flag, encoding="utf-8"
-            )
-            report = completed_process.stdout
-            errors = completed_process.stderr
-            exit_status = completed_process.returncode
-        else:
-            # dmypy does not exist on path, but must exist in the env pylsp-mypy is installed in
-            # -> use dmypy via api
-            log.info("dmypy run args = %s via api", args)
-            report, errors, exit_status = mypy_api.run_dmypy(args)
+        args = ["run", "--"] + apply_overrides(args, overrides)
+
+        log.info("dmypy run args = %s via api", args)
+        report, errors, exit_status = mypy_api.run_dmypy(args)
 
     log.debug("report:\n%s", report)
     log.debug("errors:\n%s", errors)
@@ -422,7 +358,7 @@ def init(workspace: str) -> Dict[str, str]:
     if path:
         if "pyproject.toml" in path:
             with open(path, "rb") as file:
-                configuration = tomllib.load(file).get("tool").get("pylsp-mypy")
+                configuration = tomllib.load(file).get("tool", {}).get("pylsp-mypy")
         else:
             with open(path) as file:
                 configuration = ast.literal_eval(file.read())
@@ -508,7 +444,7 @@ def findConfigFile(
 @atexit.register
 def close() -> None:
     """
-    Deltes the tempFile should it exist.
+    Deletes the tempFile should it exist.
 
     Returns
     -------
@@ -517,3 +453,6 @@ def close() -> None:
     """
     if tmpFile and tmpFile.name:
         os.unlink(tmpFile.name)
+
+    if os.path.exists(".dmypy.json"):
+        os.unlink(".dmypy.json")
