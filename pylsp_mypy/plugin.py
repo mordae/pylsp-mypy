@@ -42,6 +42,7 @@ mypyConfigFileMap: Dict[str, Optional[str]] = {}
 settingsCache: Dict[str, Dict[str, Any]] = {}
 
 tmpFile: Optional[IO[str]] = None
+statusFile: str = tempfile.mktemp(".dmypy.json")
 
 
 def parse_line(line: str, document: Optional[Document] = None) -> Optional[Dict[str, Any]]:
@@ -203,9 +204,6 @@ def get_diagnostics(
 
     dmypy = settings.get("dmypy", False)
 
-    if dmypy:
-        dmypy_status_file = settings.get("dmypy_status_file", ".dmypy.json")
-
     args = ["--show-error-end", "--no-error-summary"]
 
     global tmpFile
@@ -239,7 +237,9 @@ def get_diagnostics(
         log.info("executing mypy args = %s via api", args)
         report, errors, exit_status = mypy_api.run(args)
     else:
-        args = ["run", "--export-types", "--"] + apply_overrides(args, overrides)
+        args = ["--status-file", statusFile, "run", "--export-types", "--"] + apply_overrides(
+            args, overrides
+        )
 
         log.info("dmypy run args = %s via api", args)
         report, errors, exit_status = mypy_api.run_dmypy(args)
@@ -304,7 +304,6 @@ def pylsp_hover(
 ) -> dict[str, Any]:
     settings = settingsCache.get(workspace.root_path, {})
     dmypy = settings.get("dmypy", False)
-    dmypy_status_file = settings.get("dmypy_status_file", ".dmypy.json")
 
     if not dmypy:
         return {}
@@ -312,10 +311,11 @@ def pylsp_hover(
     line = position.get("line", 0) + 1
     column = position.get("character", 0) + 1
 
+    global statusFile
     stdout, stderr, status = mypy_api.run_dmypy(
         [
             "--status-file",
-            dmypy_status_file,
+            statusFile,
             "inspect",
             "--include-span",
             "--include-object-attrs",
@@ -477,5 +477,5 @@ def close() -> None:
     if tmpFile and tmpFile.name:
         os.unlink(tmpFile.name)
 
-    if os.path.exists(".dmypy.json"):
-        os.unlink(".dmypy.json")
+    if os.path.exists(statusFile):
+        os.unlink(statusFile)
